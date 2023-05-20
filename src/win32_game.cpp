@@ -62,23 +62,44 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    int width, height;
-    glfwGetFramebufferSize(window, &width, &height);
-    glViewport(0, 0, width, height);
+    int wwidth, wheight;
+    glfwGetFramebufferSize(window, &wwidth, &wheight);
+    glViewport(0, 0, wwidth, wheight);
 
     glfwSwapInterval(1);
 
     HWND hwnd = glfwGetWin32Window(window);
 
+    unsigned int texture;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    int width, height, nchannels;
+    unsigned char *data = stbi_load("gold-brick.png", &width, &height, &nchannels, 4);
+    if (!data) {
+        printf("Failed to load texture %s\n", "gold-brick.png");
+    }
+ 
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, (void *)data);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    
+    stbi_image_free(data);
+
 
     float vertices[] = {
-        -0.5f, -0.5f,
-        -0.5f,  0.5f,
-         0.5f,  0.5f,
+        // position     texcoord
+        -0.5f, -0.5f,   0.0f, 0.0f, 
+        -0.5f,  0.5f,   0.0f, 1.0f,
+         0.5f,  0.5f,   1.0f, 1.0f,
 
-        -0.5f, -0.5f,
-         0.5f,  0.5f,
-         0.5f, -0.5f,
+        -0.5f, -0.5f,   0.0f, 0.0f,
+         0.5f,  0.5f,   1.0f, 1.0f,
+         0.5f, -0.5f,   1.0f, 0.0f,
     };
 
     unsigned int vao;
@@ -93,8 +114,11 @@ int main(int argc, char **argv) {
 
     const char *vshader_source = "#version 330 core\n"
         "layout (location = 0) in vec2 a_pos;\n"
+        "layout (location = 1) in vec2 a_tex_coord;\n"
+        "out vec2 tex_coord;\n"
         "void main() {\n"
         "gl_Position = vec4(a_pos.x, a_pos.y, 0.0, 1.0);\n"
+        "tex_coord = a_tex_coord;\n"
         "}\0";
 
     unsigned int vshader;
@@ -104,8 +128,11 @@ int main(int argc, char **argv) {
 
     const char *fshader_source = "#version 330 core\n"
         "out vec4 frag_color;\n"
+        "in vec2 tex_coord;\n"
+        "uniform sampler2D our_texture;\n"
         "void main() {\n"
-        "frag_color = vec4(1.0f, 0.0f, 0.0f, 1.0f);\n"
+        "//frag_color = vec4(1.0f, 0.0f, 0.0f, 1.0f);\n"
+        "frag_color = texture(our_texture, tex_coord);\n"
         "}\0";
 
     unsigned int fshader;
@@ -122,8 +149,10 @@ int main(int argc, char **argv) {
     glDeleteShader(fshader);
     glUseProgram(shader_program);
 
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void *)0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)0);
     glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)(2 * sizeof(float)));
+    glEnableVertexAttribArray(1);
 
     LARGE_INTEGER last_counter = win32_get_wall_clock();
 
@@ -138,8 +167,8 @@ int main(int argc, char **argv) {
         glClear(GL_COLOR_BUFFER_BIT);
 
         glUseProgram(shader_program);
+        glBindTexture(GL_TEXTURE_2D, texture);
         glBindVertexArray(vao);
-
         glDrawArrays(GL_TRIANGLES, 0, 6);
 
         glfwSwapBuffers(window);
@@ -148,7 +177,7 @@ int main(int argc, char **argv) {
         LARGE_INTEGER end_counter = win32_get_wall_clock();
 
         float ms_elapsed = 1000.0f * win32_get_seconds_elapsed(last_counter, end_counter);
-#if 1
+#if 0
         printf("MS: %f\n", ms_elapsed);
 #endif
 
