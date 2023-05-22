@@ -19,6 +19,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+#include "common.h"
 
 #include "game.cpp"
 
@@ -83,8 +84,44 @@ void win32_process_pending_messages(HWND hwnd, Game_Controller_Input *keyboard) 
     }
 }
 
+struct Texture {
+    unsigned int id;
+    int width;
+    int height;
+};
+
+Texture GL_load_texture(char *texture_path) {
+    unsigned int texture_id;
+    glGenTextures(1, &texture_id);
+    glBindTexture(GL_TEXTURE_2D, texture_id);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    int width, height, nchannels;
+    unsigned char *data = stbi_load(texture_path, &width, &height, &nchannels, 4);
+    if (!data) {
+        printf("Failed to load texture %s\n", texture_path);
+    }
+ 
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, (void *)data);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    
+    stbi_image_free(data);
+
+    Texture texture{};
+    texture.id = texture_id;
+    texture.width = width;
+    texture.height = height;
+    return texture;
+}
+
 int main(int argc, char **argv) {
     QueryPerformanceFrequency(&win32_clock_frequency);
+    stbi_set_flip_vertically_on_load(true);
+
     if (!glfwInit()) {
         printf("Could not initialize glfw\n");
         return -1;
@@ -118,43 +155,23 @@ int main(int argc, char **argv) {
 
     HWND hwnd = glfwGetWin32Window(window);
 
-    unsigned int texture;
-    glGenTextures(1, &texture);
-    glBindTexture(GL_TEXTURE_2D, texture);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
-    stbi_set_flip_vertically_on_load(true);
-
-    int width, height, nchannels;
-    unsigned char *data = stbi_load("data/jungle.png", &width, &height, &nchannels, 4);
-    if (!data) {
-        printf("Failed to load texture %s\n", "gold-brick.png");
-    }
- 
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, (void *)data);
-    glGenerateMipmap(GL_TEXTURE_2D);
-    
-    stbi_image_free(data);
-
+    Texture tile_sheet = GL_load_texture("data/jungle.png");
+    Texture player_sheet = GL_load_texture("data/player.png");
 
     float vertices[] = {
         // position     texcoord
-        -0.5f, -0.5f,   0.0f, 0.0f, 
-        -0.5f,  0.5f,   0.0f, 1.0f,
-         0.5f,  0.5f,   1.0f, 1.0f,
+        0.0f, 0.0f,     0.0f, 0.0f,
+        0.0f, 1.0f,     0.0f, 1.0f,
+        1.0f, 1.0f,     1.0f, 1.0f,
 
-        -0.5f, -0.5f,   0.0f, 0.0f,
-         0.5f,  0.5f,   1.0f, 1.0f,
-         0.5f, -0.5f,   1.0f, 0.0f,
+        0.0f, 0.0f,     0.0f, 0.0f,
+        1.0f, 1.0f,     1.0f, 1.0f,
+        1.0f, 0.0f,     1.0f, 0.0f,
    };
 
-    unsigned int vao;
-    glGenVertexArrays(1, &vao);
-    glBindVertexArray(vao);
+    unsigned int quad_vao;
+    glGenVertexArrays(1, &quad_vao);
+    glBindVertexArray(quad_vao);
 
     unsigned int vbo;
     glGenBuffers(1, &vbo);
@@ -181,9 +198,12 @@ int main(int argc, char **argv) {
         "out vec4 frag_color;\n"
         "in vec2 tex_coord;\n"
         "uniform sampler2D our_texture;\n"
+        "uniform vec4 atlas_trans;\n"
         "void main() {\n"
-        "//frag_color = vec4(1.0f, 0.0f, 0.0f, 1.0f);\n"
-        "frag_color = texture(our_texture, tex_coord);\n"
+        "vec2 coords = tex_coord.xy * atlas_trans.zw + atlas_trans.xy;\n"
+        "vec4 tex_color = texture(our_texture, coords);\n"
+        "if (tex_color.a < 0.1) discard;\n"
+        "frag_color = tex_color;\n"
         "}\0";
 
     unsigned int fshader;
@@ -207,9 +227,16 @@ int main(int argc, char **argv) {
 
     Game_Input game_input{};
     Game_State game_state{};
+    
+    const s32 tiles_x = 16;
+    const s32 tiles_y = 9;
+    s32 tiles[tiles_y][tiles_x] = {};
+    s32 *tile_map = (s32 *)tiles;
+    for (int x = 0, y = 0; x < tiles_x; x++) {
+        tile_map[y * tiles_x + x] = 1;
+    }
 
     LARGE_INTEGER last_counter = win32_get_wall_clock();
-
     while (!glfwWindowShouldClose(window)) {
         Game_Controller_Input *keyboard = &game_input.controllers[0];
         win32_process_pending_messages(hwnd, keyboard); 
@@ -222,21 +249,52 @@ int main(int argc, char **argv) {
         glClear(GL_COLOR_BUFFER_BIT);
 
         glUseProgram(shader_program);
-        glBindTexture(GL_TEXTURE_2D, texture);
-        glBindVertexArray(vao);
+        glBindVertexArray(quad_vao);
+
+
+        HMM_Vec2 player_size = HMM_V2(100.0f, 100.0f);
+        HMM_Vec2 tile_size = HMM_V2(300.0f, 100.0f);
+
+        HMM_Mat4 projection = HMM_Orthographic_RH_ZO(0.0f, draw_region.width, 0.0f, draw_region.height, 0.0f, 100.0f);
 
         HMM_Mat4 world;
-        HMM_Mat4 projection;
-        HMM_Mat4 trans = HMM_Translate(HMM_V3(game_state.player_p.x, game_state.player_p.y, 0.0f));
-        HMM_Mat4 scale = HMM_Scale(HMM_V3(900.0f, 900.0f, 1.0f));
+        HMM_Mat4 trans;
+        HMM_Mat4 scale;
+        HMM_Mat4 wvp;
+
+        // draw tiles
+        trans = HMM_Translate(HMM_V3(0.0f, 0.0f, 0.0f));
+        scale = HMM_Scale(HMM_V3(tile_size.width, tile_size.height, 1.0f));
         world = trans * scale;
-        projection = HMM_Orthographic_RH_ZO(0.0f, draw_region.width, 0.0f, draw_region.height, 0.0f, 100.0f);
-        HMM_Mat4 wvp = projection * world;
+        wvp = projection * world;
+
+        HMM_Vec4 atlas_trans = HMM_V4(0.0f / tile_sheet.width, 176.0f / (float)tile_sheet.height, 48.0f/tile_sheet.width, 16.0f / tile_sheet.height);
 
         unsigned int wvp_loc = glGetUniformLocation(shader_program, "wvp");
+        unsigned int atlas_loc = glGetUniformLocation(shader_program, "atlas_trans");
+
         glUniformMatrix4fv(wvp_loc, 1, GL_FALSE, (f32 *)&wvp);
+        glUniform4fv(atlas_loc, 1, (f32 *)&atlas_trans);
+
+        glBindTexture(GL_TEXTURE_2D, tile_sheet.id);
 
         glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        // draw player
+        trans = HMM_Translate(HMM_V3(game_state.player_p.x, game_state.player_p.y, 0.0f));
+        scale = HMM_Scale(HMM_V3(player_size.width, player_size.height, 1.0f));
+        world = trans * scale;
+        wvp = projection * world;
+
+        atlas_trans = HMM_V4(48.0f / player_sheet.width, 0.0f / player_sheet.height, 16.0f / player_sheet.width, 16.0f / player_sheet.height);
+        glUniformMatrix4fv(wvp_loc, 1, GL_FALSE, (f32 *)&wvp);
+        glUniform4fv(atlas_loc, 1, (f32 *)&atlas_trans);
+
+        glBindTexture(GL_TEXTURE_2D, player_sheet.id);
+
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+
 
         glfwSwapBuffers(window);
 

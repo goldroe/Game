@@ -36,6 +36,7 @@ struct Game_State {
 
     HMM_Vec2 player_p;
     HMM_Vec2 player_dp;
+
 };
 
 #endif // GAME_H
