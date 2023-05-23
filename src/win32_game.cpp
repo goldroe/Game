@@ -15,6 +15,8 @@
 #include <GLFW/glfw3native.h>
 #include <GLFW/glfw3native.h>
 
+#define STB_DS_IMPLEMENTATION
+#include <stb_ds.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -74,6 +76,11 @@ void win32_process_pending_messages(HWND hwnd, Game_Controller_Input *keyboard) 
             case VK_RIGHT:
                 keyboard->move_right.ended_down = is_down;
                 break;
+            case VK_F11:
+                if (is_down != was_down) {
+                    keyboard->editor_key.ended_down = true;
+                }
+                break;
             }
         } break;
 
@@ -84,11 +91,11 @@ void win32_process_pending_messages(HWND hwnd, Game_Controller_Input *keyboard) 
     }
 }
 
-struct Texture {
-    unsigned int id;
-    int width;
-    int height;
-};
+Shader GL_load_shader(char *vertex_path, char *frag_path) {
+    Shader shader{};
+    
+    return shader;
+}
 
 Texture GL_load_texture(char *texture_path) {
     unsigned int texture_id;
@@ -187,15 +194,19 @@ int main(int argc, char **argv) {
         "#version 330 core\n"
         "layout (location = 0) in vec2 a_pos;\n"
         "uniform mat4 wvp;\n"
+        "out vec2 posl;\n"
         "void main() {\n"
         "gl_Position = wvp * vec4(a_pos.x, a_pos.y, 0.0f, 1.0f);\n"
+        "posl = a_pos;\n"
         "}\0";
 
     const char *rect_fsource =
         "#version 330 core\n"
         "out vec4 frag_color;\n"
+        "in vec2 posl;\n"
         "uniform vec3 our_color;\n"
         "void main() {\n"
+        "if (posl.x > 0.05 && posl.x < 0.95 && posl.y > 0.05 && posl.y < 0.95) discard;\n"
         "frag_color = vec4(our_color.r, our_color.g, our_color.b, 1.0);\n"
         "}\0";
 
@@ -305,13 +316,21 @@ int main(int argc, char **argv) {
     Game_Input game_input{};
     Game_State game_state{};
     
-    const s32 tiles_x = 16;
-    const s32 tiles_y = 9;
-    s32 tiles[tiles_y][tiles_x] = {};
-    s32 *tile_map = (s32 *)tiles;
-    for (int x = 0, y = 0; x < tiles_x; x++) {
-        tile_map[y * tiles_x + x] = 1;
+    int camera_offset = 0;
+
+    Entity **entities = nullptr;
+    {
+        Entity *block = (Entity *)malloc(sizeof(Entity));
+        block->type = ENTITY_TILE;
+        block->position = HMM_V2(0.0f, 0.0f);
+        block->size = HMM_V2(300.0f, 100.0f);
+        block->texture = tile_sheet;
+
+        arrpush(entities, block);
     }
+
+    HMM_Vec2 player_size = HMM_V2(100.0f, 100.0f);
+    HMM_Vec2 tile_size = HMM_V2(100.0f, 100.0f);
 
     LARGE_INTEGER last_counter = win32_get_wall_clock();
     while (!glfwWindowShouldClose(window)) {
@@ -320,16 +339,26 @@ int main(int argc, char **argv) {
 
         HMM_Vec2 draw_region = win32_get_draw_rect(hwnd);
 
+        POINT pt;
+        GetCursorPos(&pt);
+        ScreenToClient(hwnd, &pt);
+        game_input.cursor_x = pt.x;
+        game_input.cursor_y = (int)(draw_region.height - pt.y); // moves origin of screen to bottom left
+
+        if (keyboard->editor_key.ended_down) {
+            game_state.editor_mode = !game_state.editor_mode;
+            keyboard->editor_key.ended_down = false;
+        }
+
         game_update_and_render(&game_input, &game_state);
+
+
 
         glClearColor(0.08f, 0.08f, 0.08f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
         glUseProgram(quad_program);
         glBindVertexArray(quad_vao);
-
-        HMM_Vec2 player_size = HMM_V2(100.0f, 100.0f);
-        HMM_Vec2 tile_size = HMM_V2(300.0f, 100.0f);
 
         HMM_Mat4 projection = HMM_Orthographic_RH_ZO(0.0f, draw_region.width, 0.0f, draw_region.height, 0.0f, 100.0f);
 
@@ -338,24 +367,29 @@ int main(int argc, char **argv) {
         HMM_Mat4 scale;
         HMM_Mat4 wvp;
 
-        // draw tiles
-        trans = HMM_Translate(HMM_V3(0.0f, 0.0f, 0.0f));
-        scale = HMM_Scale(HMM_V3(tile_size.width, tile_size.height, 1.0f));
-        world = trans * scale;
-        wvp = projection * world;
-
-        HMM_Vec4 atlas_trans = HMM_V4(0.0f / tile_sheet.width, 176.0f / (float)tile_sheet.height, 48.0f/tile_sheet.width, 16.0f / tile_sheet.height);
-
+        unsigned int rect_wvp_loc = glGetUniformLocation(rect_program, "wvp");
+        unsigned int rect_color_loc = glGetUniformLocation(rect_program, "our_color");
         unsigned int wvp_loc = glGetUniformLocation(quad_program, "wvp");
         unsigned int atlas_loc = glGetUniformLocation(quad_program, "atlas_trans");
 
-        glUniformMatrix4fv(wvp_loc, 1, GL_FALSE, (f32 *)&wvp);
-        glUniform4fv(atlas_loc, 1, (f32 *)&atlas_trans);
+        HMM_Vec4 atlas_trans{};
+        // draw tiles
+        for (int i = 0; i < arrlen(entities); i++) {
+            Entity *e = entities[i];
+            trans = HMM_Translate(HMM_V3(e->position.x, e->position.y, 0.0f));
+            scale = HMM_Scale(HMM_V3(e->size.x, e->size.y, 1.0f));
+            world = trans * scale;
+            wvp = projection * world;
 
-        glBindTexture(GL_TEXTURE_2D, tile_sheet.id);
+            atlas_trans = HMM_V4(0.0f / tile_sheet.width, 176.0f / (float)tile_sheet.height, 48.0f/tile_sheet.width, 16.0f / tile_sheet.height);
 
-        
-        glDrawArrays(GL_TRIANGLES, 0, 6);
+            glUniformMatrix4fv(wvp_loc, 1, GL_FALSE, (f32 *)&wvp);
+            glUniform4fv(atlas_loc, 1, (f32 *)&atlas_trans);
+
+            glBindTexture(GL_TEXTURE_2D, e->texture.id);
+
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+        }
 
         // draw player
         trans = HMM_Translate(HMM_V3(game_state.player_p.x, game_state.player_p.y, 0.0f));
@@ -372,42 +406,29 @@ int main(int argc, char **argv) {
         glDrawArrays(GL_TRIANGLES, 0, 6);
 
 
-        // draw rect
+        // draw rects
         glUseProgram(rect_program);
         glBindVertexArray(rect_vao);
 
-        trans = HMM_Translate(HMM_V3(0.0f, 0.0f, 0.0f));
-        scale = HMM_Scale(HMM_V3(100.0f, 5.0f, 1.0f));
-        world = trans * scale;
-        wvp = projection * world;
+        if (game_state.editor_mode) {
+            for (int i = 0; i < arrlen(entities); i++) {
+                Entity *e = entities[i];
+                if (game_input.cursor_x > e->position.x
+                && game_input.cursor_x < e->position.x + e->size.width
+                && game_input.cursor_y > e->position.y
+                && game_input.cursor_y < e->position.y + e->size.height) {
+                    HMM_Vec3 rect_color = HMM_V3(1.0f, 1.0f, 0.0f);
+                    trans = HMM_Translate(HMM_V3(e->position.x, e->position.y, 0.0f));
+                    scale = HMM_Scale(HMM_V3(e->size.width, e->size.height, 1.0f));
+                    world = trans * scale;
+                    wvp = projection * world;
 
-        HMM_Vec3 rect_color = HMM_V3(1.0f, 1.0f, 0.0f);
-        unsigned int rect_wvp_loc = glGetUniformLocation(rect_program, "wvp");
-        unsigned int rect_color_loc = glGetUniformLocation(rect_program, "our_color");
-        glUniformMatrix4fv(rect_wvp_loc, 1, GL_FALSE, (f32 *)&wvp);
-        glUniform3fv(rect_color_loc, 1, (f32 *)&rect_color);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-
-        trans = HMM_Translate(HMM_V3(0.0f, 100.0f, 0.0f));
-        scale = HMM_Scale(HMM_V3(100.0f, 5.0f, 1.0f));
-        world = trans * scale;
-        wvp = projection * world;
-        glUniformMatrix4fv(rect_wvp_loc, 1, GL_FALSE, (f32 *)&wvp);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-
-        trans = HMM_Translate(HMM_V3(0.0f, 0.0f, 0.0f));
-        scale = HMM_Scale(HMM_V3(5.0f, 100.0f, 1.0f));
-        world = trans * scale;
-        wvp = projection * world;
-        glUniformMatrix4fv(rect_wvp_loc, 1, GL_FALSE, (f32 *)&wvp);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-
-        trans = HMM_Translate(HMM_V3(100.0f - 5.0f, 0.0f, 0.0f));
-        scale = HMM_Scale(HMM_V3(5.0f, 100.0f, 1.0f));
-        world = trans * scale;
-        wvp = projection * world;
-        glUniformMatrix4fv(rect_wvp_loc, 1, GL_FALSE, (f32 *)&wvp);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
+                    glUniformMatrix4fv(rect_wvp_loc, 1, GL_FALSE, (f32 *)&wvp);
+                    glUniform3fv(rect_color_loc, 1, (f32 *)&rect_color);
+                    glDrawArrays(GL_TRIANGLES, 0, 6);
+                }
+            }
+        }
 
         glfwSwapBuffers(window);
 
